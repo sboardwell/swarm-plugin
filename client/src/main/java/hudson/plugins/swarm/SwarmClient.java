@@ -320,7 +320,8 @@ public class SwarmClient {
                 + param("mode", options.mode.toUpperCase(Locale.ENGLISH))
                 + param("hash", hash)
                 + param("deleteExistingClients", Boolean.toString(options.deleteExistingClients))
-                + param("keepDisconnectedClients", Boolean.toString(options.keepDisconnectedClients)));
+                + param("keepDisconnectedClients", Boolean.toString(options.keepDisconnectedClients))
+                + param("keepNodeOnReconnect", Boolean.toString(options.keepNodeOnReconnect)));
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri).POST(HttpRequest.BodyPublishers.noBody());
         SwarmClient.addAuthorizationHeader(builder, options);
         Crumb csrfCrumb = getCsrfCrumb(client, options, url);

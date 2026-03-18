@@ -178,6 +178,11 @@ public class Client {
         logger.info("Connecting to Jenkins controller");
         URL url = swarmClient.getUrl();
 
+        // Track whether we've successfully created the node
+        boolean nodeCreated = false;
+        // Track whether we've set up the label file watcher
+        boolean labelFileWatcherStarted = false;
+
         // wait until we get the ACK back
         int retry = 0;
         while (true) {
@@ -188,8 +193,17 @@ public class Client {
                  * Create a new Swarm agent. After this method returns, the value of the name field
                  * has been set to the name returned by the server, which may or may not be the name
                  * we originally requested.
+                 *
+                 * When keepNodeOnReconnect is enabled, only create the agent on first connection.
+                 * This allows the agent to behave like a permanent agent, avoiding node recreation
+                 * that can cause issues in HA environments during controller rolling restarts.
                  */
-                swarmClient.createSwarmAgent(url);
+                if (!options.keepNodeOnReconnect || !nodeCreated) {
+                    swarmClient.createSwarmAgent(url);
+                    nodeCreated = true;
+                } else {
+                    logger.info("Skipping node creation, reconnecting to existing node");
+                }
 
                 /*
                  * Set up the label file watcher thread. If the label file changes, this thread
@@ -197,12 +211,13 @@ public class Client {
                  * the Swarm agent, since only then has the server returned the name we must use
                  * when doing label operations.
                  */
-                if (options.labelsFile != null) {
+                if (options.labelsFile != null && !labelFileWatcherStarted) {
                     logger.info("Setting up LabelFileWatcher");
                     LabelFileWatcher l = new LabelFileWatcher(url, options, swarmClient.getName(), args);
                     Thread labelFileWatcherThread = new Thread(l, "LabelFileWatcher");
                     labelFileWatcherThread.setDaemon(true);
                     labelFileWatcherThread.start();
+                    labelFileWatcherStarted = true;
                 }
 
                 /*
@@ -224,6 +239,23 @@ public class Client {
                 }
             } catch (IOException | InterruptedException | RetryException e) {
                 logger.log(Level.SEVERE, "An error occurred", e);
+
+                /*
+                 * If keepNodeOnReconnect is enabled and we get a connection error,
+                 * it might be because the node was deleted on the controller.
+                 * Reset nodeCreated flag to allow recreation on next attempt if the
+                 * error suggests the node doesn't exist.
+                 */
+                if (options.keepNodeOnReconnect && nodeCreated) {
+                    String errorMessage = e.getMessage();
+                    if (errorMessage != null &&
+                        (errorMessage.contains("does not exist") ||
+                         errorMessage.contains("No such agent") ||
+                         errorMessage.contains("404"))) {
+                        logger.warning("Node appears to have been deleted, will recreate on next attempt");
+                        nodeCreated = false;
+                    }
+                }
             }
 
             int waitTime =

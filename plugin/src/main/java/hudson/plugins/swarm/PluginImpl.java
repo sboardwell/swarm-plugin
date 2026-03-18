@@ -6,8 +6,10 @@ import hudson.Util;
 import hudson.model.Computer;
 import hudson.model.Descriptor.FormException;
 import hudson.model.Node;
+import hudson.model.Slave;
 import hudson.slaves.EnvironmentVariablesNodeProperty;
 import hudson.slaves.NodeProperty;
+import hudson.slaves.RetentionStrategy;
 import hudson.tools.ToolDescriptor;
 import hudson.tools.ToolInstallation;
 import hudson.tools.ToolLocationNodeProperty;
@@ -21,6 +23,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Properties;
 import java.util.Set;
+import java.util.logging.Logger;
 import jenkins.model.Jenkins;
 import jenkins.slaves.JnlpAgentReceiver;
 import org.apache.commons.lang.ArrayUtils;
@@ -35,6 +38,8 @@ import org.kohsuke.stapler.verb.POST;
  * @author Kohsuke Kawaguchi
  */
 public class PluginImpl extends Plugin {
+
+    private static final Logger logger = Logger.getLogger(PluginImpl.class.getName());
 
     private Node getNodeByName(String name, StaplerResponse2 rsp) throws IOException {
         Jenkins jenkins = Jenkins.get();
@@ -131,7 +136,8 @@ public class PluginImpl extends Plugin {
             @QueryParameter Node.Mode mode,
             @QueryParameter(fixEmpty = true) String hash,
             @QueryParameter boolean deleteExistingClients,
-            @QueryParameter boolean keepDisconnectedClients)
+            @QueryParameter boolean keepDisconnectedClients,
+            @QueryParameter boolean keepNodeOnReconnect)
             throws IOException {
         Jenkins jenkins = Jenkins.get();
 
@@ -194,18 +200,63 @@ public class PluginImpl extends Plugin {
         }
 
         try {
+            // Create final copy for lambda expressions (name may have been modified by hash logic)
+            final String agentName = name;
+
             String nodeDescription = "Swarm agent from " + req.getRemoteHost();
             if (description != null) {
                 nodeDescription += ": " + description;
             }
-            SwarmSlave agent = new SwarmSlave(
-                    name,
-                    nodeDescription,
-                    remoteFsRoot,
-                    String.valueOf(executors),
-                    mode,
-                    "swarm " + Util.fixNull(labels),
-                    nodeProperties);
+
+            // Validate permanent agent configuration
+            if (keepDisconnectedClients && !keepNodeOnReconnect) {
+                logger.warning(() -> "Agent " + agentName + " has keepDisconnectedClients=true but keepNodeOnReconnect=false. "
+                        + "The client will recreate the node on reconnection, which may cause issues. "
+                        + "Consider using both flags together for true permanent agent behavior.");
+            }
+            if (!keepDisconnectedClients && keepNodeOnReconnect) {
+                logger.warning(() -> "Agent " + agentName + " has keepNodeOnReconnect=true but keepDisconnectedClients=false. "
+                        + "The server will delete the node on disconnect, causing reconnection to fail. "
+                        + "Consider using both flags together for true permanent agent behavior.");
+            }
+
+            Slave agent;
+            if (keepDisconnectedClients && keepNodeOnReconnect) {
+                /*
+                 * Use DumbSlave when BOTH permanent agent flags are set.
+                 * HA implementations typically check instanceof DumbSlave to identify permanent agents.
+                 * Permanent agents are loaded on all controller replicas, which is critical for:
+                 * - Proper ownership tracking across replicas
+                 * - Build adoption during rolling restarts
+                 * - Avoiding "is in use... should be adopted soon" errors
+                 *
+                 * Without DumbSlave, ephemeral agents are only loaded on the owning replica,
+                 * causing adoption failures during HA rolling restarts.
+                 *
+                 * SwarmLauncher checks for KeepSwarmClientNodeProperty to skip cleanup on disconnect.
+                 */
+                logger.info(() -> "Creating permanent Swarm agent (DumbSlave): " + agentName);
+                agent = new hudson.slaves.DumbSlave(name, remoteFsRoot, new SwarmLauncher());
+                agent.setNodeDescription(nodeDescription);
+                agent.setNumExecutors(executors);
+                agent.setMode(mode);
+                agent.setLabelString("swarm " + Util.fixNull(labels));
+                agent.setRetentionStrategy(RetentionStrategy.NOOP);
+                agent.setNodeProperties(nodeProperties);
+            } else {
+                /*
+                 * Use standard ephemeral SwarmSlave.
+                 * These nodes auto-cleanup on disconnect (unless keepDisconnectedClients is set).
+                 */
+                agent = new SwarmSlave(
+                        name,
+                        nodeDescription,
+                        remoteFsRoot,
+                        String.valueOf(executors),
+                        mode,
+                        "swarm " + Util.fixNull(labels),
+                        nodeProperties);
+            }
             jenkins.addNode(agent);
 
             rsp.setContentType("text/plain; charset=iso-8859-1");

@@ -53,7 +53,10 @@ public class Options {
             depends = "-webSocket")
     public Map<String, String> webSocketHeaders;
 
-    @Option(name = "-noRetryAfterConnected", usage = "Do not retry if a successful connection gets closed.")
+    @Option(
+            name = "-noRetryAfterConnected",
+            usage = "Do not retry if a successful connection gets closed.",
+            forbids = "-keepNodeOnReconnect")
     public boolean noRetryAfterConnected;
 
     @Option(name = "-retry", usage = "Number of retries before giving up. Unlimited if not specified.")
@@ -95,6 +98,15 @@ public class Options {
             name = "-keepDisconnectedClients",
             usage = "Do not remove clients from the controller when the agent becomes disconnected.")
     public boolean keepDisconnectedClients;
+
+    @Option(
+            name = "-keepNodeOnReconnect",
+            usage = "Do not recreate the node on reconnection attempts. This allows the agent to behave "
+                    + "like a permanent agent, reconnecting to the existing node with cached credentials. "
+                    + "Useful in HA environments to avoid handshake errors during controller rolling restarts. "
+                    + "Recommended to use with -keepDisconnectedClients.",
+            forbids = "-noRetryAfterConnected")
+    public boolean keepNodeOnReconnect;
 
     @Option(
             name = "-mode",
